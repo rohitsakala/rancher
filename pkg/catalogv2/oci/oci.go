@@ -114,33 +114,10 @@ func GenerateIndex(URL string, credentialSecret *corev1.Secret, clusterRepoSpec 
 		return nil, fmt.Errorf("failed to create an OCI client for url %s: %w", URL, err)
 	}
 
-	indexFile := repo.NewIndexFile()
-
-	// if the index file configmap already exists, use it instead of creating a new one.
-	if clusterRepoStatus.IndexConfigMapName != "" && clusterRepoSpec.URL == clusterRepoStatus.URL {
-		configMap, err := configMapCache.Get(clusterRepoStatus.IndexConfigMapNamespace, clusterRepoStatus.IndexConfigMapName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch existing configmap of indexfile for URL %s", URL)
-		}
-
-		data, err := readBytes(configMapCache, configMap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read bytes of existing configmap for URL %s", URL)
-		}
-		gz, err := gzip.NewReader(bytes.NewBuffer(data))
-		if err != nil {
-			return nil, err
-		}
-		defer gz.Close()
-
-		data, err = io.ReadAll(gz)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := json.Unmarshal(data, indexFile); err != nil {
-			return nil, err
-		}
+	// Create index file repo
+	indexFile, err := getIndexfile(clusterRepoStatus, clusterRepoSpec, URL, configMapCache)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create a indexfile %s: %w", URL, err)
 	}
 
 	var orasRepository *remote.Repository
@@ -248,6 +225,41 @@ func GenerateIndex(URL string, credentialSecret *corev1.Secret, clusterRepoSpec 
 		err = orasRegistry.Repositories(context.Background(), "", repositoriesFunc)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch repositories for %s: %w", URL, err)
+		}
+	}
+
+	return indexFile, nil
+}
+
+// getIndexfile fetches the indexfile if it already exits, if not
+// it creates a new indexfile and returns it.
+func getIndexfile(clusterRepoStatus v1.RepoStatus, clusterRepoSpec v1.RepoSpec, URL string, configMapCache corev1controllers.ConfigMapCache) (*repo.IndexFile, error) {
+	indexFile := repo.NewIndexFile()
+
+	// if the index file configmap already exists, use it instead of creating a new one.
+	if clusterRepoStatus.IndexConfigMapName != "" && clusterRepoSpec.URL == clusterRepoStatus.URL {
+		configMap, err := configMapCache.Get(clusterRepoStatus.IndexConfigMapNamespace, clusterRepoStatus.IndexConfigMapName)
+		if err != nil {
+			return indexFile, fmt.Errorf("failed to fetch existing configmap of indexfile for URL %s", URL)
+		}
+
+		data, err := readBytes(configMapCache, configMap)
+		if err != nil {
+			return indexFile, fmt.Errorf("failed to read bytes of existing configmap for URL %s", URL)
+		}
+		gz, err := gzip.NewReader(bytes.NewBuffer(data))
+		if err != nil {
+			return indexFile, err
+		}
+		defer gz.Close()
+
+		data, err = io.ReadAll(gz)
+		if err != nil {
+			return indexFile, err
+		}
+
+		if err := json.Unmarshal(data, indexFile); err != nil {
+			return indexFile, err
 		}
 	}
 
