@@ -14,6 +14,7 @@ import (
 	ocispecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	corev1controllers "github.com/rancher/wrangler/v2/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/registry"
 	"helm.sh/helm/v3/pkg/repo"
 	corev1 "k8s.io/api/core/v1"
@@ -128,22 +129,37 @@ func GenerateIndex(URL string, credentialSecret *corev1.Secret, clusterRepoSpec 
 		// We don't need to switch from + to _ like helm does https://github.com/helm/helm/blob/e81f6140ddb22bc99a08f7409522a8dbe5338ee3/pkg/registry/util.go#L123-L142
 		// since we are pulling the chart and not pushing the chart.+ in version is not accepted in OCI registries.
 		for _, tag := range tags {
-			// Check if the tag is a valid semver version or not. If yes, then proceed.
-			if _, err := semver.NewVersion(tag); err == nil {
-				logrus.Debugf("found a tag %s for the repository %s for OCI clusterrepo URL %s", tag, ociClient.repository, URL)
-				ociURL := fmt.Sprintf("%s/%s:%s", ociClient.registry, ociClient.repository, ociClient.tag)
-				ociClient.tag = tag
-
-				orasRepository, err = ociClient.GetOrasRepository()
-				if err != nil {
-					return fmt.Errorf("failed to create an oras repository for url %s: %w", ociURL, err)
+			if tag != "3.6.0" {
+				// add the remainng tags to the index := only the version
+				if _, err := semver.NewVersion(tag); err == nil {
+					cr := &repo.ChartVersion{
+						Metadata: &chart.Metadata{
+							Version: tag,
+							Name:    chartName,
+						},
+					}
+					ee := indexFile.Entries[chartName]
+					indexFile.Entries[chartName] = append(ee, cr)
 				}
+			} else {
+				// Check if the tag is a valid semver version or not. If yes, then proceed.
+				if _, err := semver.NewVersion(tag); err == nil {
+					logrus.Debugf("found a tag %s for the repository %s for OCI clusterrepo URL %s", tag, ociClient.repository, URL)
+					ociURL := fmt.Sprintf("%s/%s:%s", ociClient.registry, ociClient.repository, ociClient.tag)
+					ociClient.tag = tag
 
-				err = addToHelmRepoIndex(*ociClient, chartName, indexFile, orasRepository)
-				if err != nil {
-					return fmt.Errorf("failed to add chartName %s in OCI URL %s to helm repo index: %w", chartName, ociURL, err)
+					orasRepository, err = ociClient.GetOrasRepository()
+					if err != nil {
+						return fmt.Errorf("failed to create an oras repository for url %s: %w", ociURL, err)
+					}
+
+					err = addToHelmRepoIndex(*ociClient, chartName, indexFile, orasRepository)
+					if err != nil {
+						return fmt.Errorf("failed to add chartName %s in OCI URL %s to helm repo index: %w", chartName, ociURL, err)
+					}
 				}
 			}
+
 		}
 		return nil
 	}
@@ -208,9 +224,11 @@ func GenerateIndex(URL string, credentialSecret *corev1.Secret, clusterRepoSpec 
 			return nil, fmt.Errorf("failed to create an oras repository for url %s: %w", URL, err)
 		}
 
+		chartName = ociClient.repository[strings.LastIndex(ociClient.repository, "/")+1:]
+
 		err = orasRepository.Tags(context.Background(), "", tagsFunc)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch tags for repository %s: %w", URL, err)
+			return indexFile, fmt.Errorf("failed to fetch tags for repository %s: %w", URL, err)
 		}
 
 		// If no repository and tag is provided, we fetch
@@ -224,7 +242,7 @@ func GenerateIndex(URL string, credentialSecret *corev1.Secret, clusterRepoSpec 
 		// Fetch all repositories
 		err = orasRegistry.Repositories(context.Background(), "", repositoriesFunc)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch repositories for %s: %w", URL, err)
+			return indexFile, fmt.Errorf("failed to fetch repositories for %s: %w", URL, err)
 		}
 	}
 

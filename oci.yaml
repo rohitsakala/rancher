@@ -1,0 +1,10 @@
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: ocitesting
+spec:
+  clientSecret:
+    name: clusterrepo-auth-kr27j
+    namespace: cattle-system
+  insecurePlainHttp: true
+  url: oci://localhost:5005
