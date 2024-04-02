@@ -76,6 +76,7 @@ type RepoCondition string
 const (
 	RepoDownloaded         RepoCondition = "Downloaded"
 	FollowerRepoDownloaded RepoCondition = "FollowerDownloaded"
+	RequestStatus          RepoCondition = "RequestStatus"
 )
 
 type RepoStatus struct {

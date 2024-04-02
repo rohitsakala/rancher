@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	catalog "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
@@ -18,6 +20,7 @@ import (
 	"github.com/rancher/wrangler/v2/pkg/apply"
 	"github.com/rancher/wrangler/v2/pkg/condition"
 	corev1controllers "github.com/rancher/wrangler/v2/pkg/generated/controllers/core/v1"
+	"github.com/rancher/wrangler/v2/pkg/genericcondition"
 	name2 "github.com/rancher/wrangler/v2/pkg/name"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/registry"
@@ -26,6 +29,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
 const (
@@ -115,7 +120,7 @@ func toOwnerObject(namespace string, owner metav1.OwnerReference) runtime.Object
 	}
 }
 
-func (r *repoHandler) createOrUpdateMap(namespace, name string, index *repo.IndexFile, owner metav1.OwnerReference) (*corev1.ConfigMap, error) {
+func (r *repoHandler) createOrUpdateMap(namespace string, index *repo.IndexFile, owner metav1.OwnerReference) (*corev1.ConfigMap, error) {
 	// do this before we normalize the namespace
 	ownerObject := toOwnerObject(namespace, owner)
 
@@ -128,9 +133,7 @@ func (r *repoHandler) createOrUpdateMap(namespace, name string, index *repo.Inde
 		return nil, err
 	}
 
-	if namespace == "" {
-		namespace = namespaces.System
-	}
+	namespace = getConfigMapNamespace(namespace)
 
 	var (
 		objs  []runtime.Object
@@ -148,12 +151,12 @@ func (r *repoHandler) createOrUpdateMap(namespace, name string, index *repo.Inde
 
 		next := ""
 		if len(left) > 0 {
-			next = name2.SafeConcatName(owner.Name, fmt.Sprint(i+1), string(owner.UID))
+			next = generateConfigMapName(owner.Name, i+1, owner.UID)
 		}
 
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:            name2.SafeConcatName(owner.Name, fmt.Sprint(i), string(owner.UID)),
+				Name:            generateConfigMapName(owner.Name, i, owner.UID),
 				Namespace:       namespace,
 				OwnerReferences: []metav1.OwnerReference{owner},
 				Annotations: map[string]string{
@@ -234,28 +237,59 @@ func (r *repoHandler) download(repoSpec *catalog.RepoSpec, status catalog.RepoSt
 	} else if repoSpec.URL != "" {
 		switch {
 		case registry.IsOCI(repoSpec.URL):
-			index, err = oci.GenerateIndex(repoSpec.URL, secret, *repoSpec, status, r.configMapCache)
+			// Create index file repo
+			index, err = getIndexfile(status, *repoSpec, r.configMaps, owner, metadata.Namespace)
+			if err != nil {
+				return status, err
+			}
+			index, err = oci.GenerateIndex(repoSpec.URL, secret, *repoSpec, status, index)
 		default:
 			index, err = helmhttp.DownloadIndex(secret, repoSpec.URL, repoSpec.CABundle, repoSpec.InsecureSkipTLSverify, repoSpec.DisableSameOriginCheck)
 		}
-
 		status.URL = repoSpec.URL
 		status.Branch = ""
 	} else {
 		return status, nil
 	}
+
+	// In the case of OCI type Helm repositories, if the error is 401, 403 and 404,
+	// we don't want to retrigger immediately since wrangler retrigger every 2 seconds.
+	// To avoid this we create a condition to store the status code and check the condition
+	// at start of the function whether to proceed or wait for 6 hours.
+	if errResp, ok := err.(*errcode.ErrorResponse); ok {
+		if errResp.StatusCode == http.StatusUnauthorized ||
+			errResp.StatusCode == http.StatusNotFound ||
+			errResp.StatusCode == http.StatusForbidden {
+
+			requestCondition := genericcondition.GenericCondition{}
+			for _, condition := range status.Conditions {
+				if condition.Type == string(catalog.RequestStatus) {
+					requestCondition = condition
+				}
+			}
+			requestCondition.LastUpdateTime = time.Now().UTC().Format(time.RFC3339)
+			requestCondition.Reason = fmt.Sprint(errResp.StatusCode)
+
+			return status, nil
+		}
+		// Add a new condition for ourselves which has nothing to do with UI
+		// We will add a condition to save the status code
+		// send the error as it is.
+		// Later if the handler runs once again, we check for the condition
+		// and also check for the time passage and if it is more than 6 hours,
+		// we allow it.
+		// If the generation is bigger, then the spec was updated and so we allow it.
+	}
+	// We save the indexfile if it is 429 so that future requests don't get
+	// to same charts are avoided.
+
 	if err != nil || index == nil {
 		return status, err
 	}
 
 	index.SortEntries()
 
-	name := status.IndexConfigMapName
-	if name == "" {
-		name = owner.Name
-	}
-
-	cm, err := r.createOrUpdateMap(metadata.Namespace, name, index, owner)
+	cm, err := r.createOrUpdateMap(metadata.Namespace, index, owner)
 	if err != nil {
 		return status, err
 	}
@@ -305,4 +339,90 @@ func shouldRefresh(spec *catalog.RepoSpec, status *catalog.RepoStatus) bool {
 	}
 	refreshTime := time.Now().Add(-interval)
 	return refreshTime.After(status.DownloadTime.Time)
+}
+
+// getIndexfile fetches the indexfile if it already exits for the clusterRepo
+// if not, it creates a new indexfile and returns it.
+func getIndexfile(clusterRepoStatus catalog.RepoStatus,
+	clusterRepoSpec catalog.RepoSpec,
+	configMapClient corev1controllers.ConfigMapClient,
+	owner metav1.OwnerReference,
+	namespace string) (*repo.IndexFile, error) {
+
+	indexFile := repo.NewIndexFile()
+	var configMap *corev1.ConfigMap
+	var err error
+
+	// If the status has the configmap defined, fetch it.
+	if clusterRepoStatus.IndexConfigMapName != "" && clusterRepoSpec.URL == clusterRepoStatus.URL {
+		configMap, err = configMapClient.Get(clusterRepoStatus.IndexConfigMapNamespace, clusterRepoStatus.IndexConfigMapName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch the index configmap for clusterRepo %s", owner.Name)
+		}
+	} else {
+		// otherwise if the configmap is already created, fetch it using the name of the configmap and the namespace.
+		configMapName := generateConfigMapName(owner.Name, 0, owner.UID)
+		configMapNamespace := getConfigMapNamespace(namespace)
+
+		configMap, err = configMapClient.Get(configMapNamespace, configMapName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return indexFile, nil
+			}
+			return nil, fmt.Errorf("failed to fetch the index configmap for clusterRepo %s", owner.Name)
+		}
+	}
+
+	data, err := readBytes(configMapClient, configMap)
+	if err != nil {
+		return indexFile, fmt.Errorf("failed to read bytes of existing configmap for URL %s", clusterRepoSpec.URL)
+	}
+	gz, err := gzip.NewReader(bytes.NewBuffer(data))
+	if err != nil {
+		return indexFile, err
+	}
+	defer gz.Close()
+	data, err = io.ReadAll(gz)
+	if err != nil {
+		return indexFile, err
+	}
+	if err := json.Unmarshal(data, indexFile); err != nil {
+		return indexFile, err
+	}
+
+	return indexFile, nil
+}
+
+// readBytes reads data from the chain of helm repo index configmaps.
+func readBytes(configMapCache corev1controllers.ConfigMapClient, cm *corev1.ConfigMap) ([]byte, error) {
+	var (
+		bytes = cm.BinaryData["content"]
+		err   error
+	)
+
+	for {
+		next := cm.Annotations["catalog.cattle.io/next"]
+		if next == "" {
+			break
+		}
+		cm, err = configMapCache.Get(cm.Namespace, next, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		bytes = append(bytes, cm.BinaryData["content"]...)
+	}
+
+	return bytes, nil
+}
+
+func generateConfigMapName(ownerName string, index int, UID types.UID) string {
+	return name2.SafeConcatName(ownerName, fmt.Sprint(index), string(UID))
+}
+
+func getConfigMapNamespace(namespace string) string {
+	if namespace == "" {
+		return namespaces.System
+	}
+
+	return namespace
 }

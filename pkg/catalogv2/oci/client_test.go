@@ -258,13 +258,12 @@ func TestFetchChart(t *testing.T) {
 		orasReposistory.PlainHTTP = true
 		assert.NoError(err)
 
-		_, found, err := ociClient.fetchChart(orasReposistory)
+		_, err = ociClient.fetchChart(orasReposistory)
 		if tc.expectedErr == "" {
 			assert.NoError(err)
 		} else {
 			assert.Contains(err.Error(), tc.expectedErr)
 		}
-		assert.Equal(found, tc.expectedFound)
 	}
 }
 
@@ -373,7 +372,7 @@ func TestAddToIndex(t *testing.T) {
 		ociClient, err := NewClient("oci://example.com/testingchart:0.1.0", v1.RepoSpec{}, nil)
 		assert.NoError(err)
 
-		err = ociClient.addToIndex(tc.indexFile, tc.chartName, tc.fileName)
+		err = ociClient.addToIndex(tc.indexFile, tc.chartName)
 		if tc.expectedErr != nil {
 			assert.ErrorContains(err, tc.expectedErr.Error())
 		} else {
