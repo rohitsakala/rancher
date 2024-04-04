@@ -2,6 +2,9 @@ package helm
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"time"
 
 	catalog "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
@@ -14,8 +17,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/registry"
 	"helm.sh/helm/v3/pkg/repo"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
 type OCIRepohandler struct {
@@ -46,6 +52,9 @@ func (o *OCIRepohandler) onClusterRepoChange(key string, clusterRepo *catalog.Cl
 	if clusterRepo == nil {
 		return nil, nil
 	}
+
+	orignalStatus := clusterRepo.Status.DeepCopy()
+
 	// Ignore non OCI ClusterRepos
 	if !registry.IsOCI(clusterRepo.Spec.URL) {
 		return clusterRepo, nil
@@ -56,7 +65,7 @@ func (o *OCIRepohandler) onClusterRepoChange(key string, clusterRepo *catalog.Cl
 
 	err := ensureIndexConfigMap(clusterRepo, &clusterRepo.Status, o.configMapController)
 	if err != nil {
-		return o.changeCondition(clusterRepo, err)
+		return o.setErrorCondition(clusterRepo, err, orignalStatus)
 	}
 
 	if !shouldRefresh(&clusterRepo.Spec, &clusterRepo.Status) {
@@ -68,7 +77,7 @@ func (o *OCIRepohandler) onClusterRepoChange(key string, clusterRepo *catalog.Cl
 
 	secret, err := catalogv2.GetSecret(o.secretCacheController, &clusterRepo.Spec, clusterRepo.Namespace)
 	if err != nil {
-		return o.changeCondition(clusterRepo, err)
+		return o.setErrorCondition(clusterRepo, err, orignalStatus)
 	}
 
 	owner := metav1.OwnerReference{
@@ -81,21 +90,46 @@ func (o *OCIRepohandler) onClusterRepoChange(key string, clusterRepo *catalog.Cl
 	downloadTime := metav1.Now()
 	index, err = getIndexfile(clusterRepo.Status, clusterRepo.Spec, o.configMapController, owner, clusterRepo.Namespace)
 	if err != nil {
-		return o.changeCondition(clusterRepo, err)
+		return o.setErrorCondition(clusterRepo, err, orignalStatus)
 	}
 	index, err = oci.GenerateIndex(clusterRepo.Spec.URL, secret, clusterRepo.Spec, clusterRepo.Status, index)
+	// If there is 401 or 403 error code, then we don't reconcile further and wait for 6 hours interval
+	var errResp *errcode.ErrorResponse
+	if errors.As(err, &errResp) {
+		if errResp.StatusCode == http.StatusUnauthorized ||
+			errResp.StatusCode == http.StatusForbidden ||
+			errResp.StatusCode == http.StatusNotFound {
+			return o.set4xxCondition(clusterRepo, errResp, orignalStatus)
+		}
+
+		if errResp.StatusCode == http.StatusTooManyRequests {
+			clusterRepo.Status.URL = clusterRepo.Spec.URL
+			clusterRepo.Status.Branch = ""
+
+			index.SortEntries()
+			_, err := createOrUpdateMap(clusterRepo.Namespace, index, owner, o.apply)
+			if err != nil {
+				logrus.Debugf("failed to create/udpate the configmap incase of 4xx statuscode for %s", clusterRepo.Name)
+				return o.set4xxCondition(clusterRepo, errResp, orignalStatus)
+			}
+
+			return o.set4xxCondition(clusterRepo, errResp, orignalStatus)
+		}
+	}
+
+	// If there is 429 error code, then we don't reconcile further and wait for 6 hours interval
+	// but we also create the configmap for future usecases.
 	if err != nil || index == nil {
-		return o.changeCondition(clusterRepo, err)
+		return o.setErrorCondition(clusterRepo, err, orignalStatus)
 	}
 
 	clusterRepo.Status.URL = clusterRepo.Spec.URL
 	clusterRepo.Status.Branch = ""
 
 	index.SortEntries()
-
 	cm, err := createOrUpdateMap(clusterRepo.Namespace, index, owner, o.apply)
 	if err != nil {
-		return o.changeCondition(clusterRepo, err)
+		return o.setErrorCondition(clusterRepo, err, orignalStatus)
 	}
 
 	clusterRepo.Status.IndexConfigMapName = cm.Name
@@ -103,19 +137,51 @@ func (o *OCIRepohandler) onClusterRepoChange(key string, clusterRepo *catalog.Cl
 	clusterRepo.Status.IndexConfigMapResourceVersion = cm.ResourceVersion
 	clusterRepo.Status.DownloadTime = downloadTime
 
-	return o.changeCondition(clusterRepo, nil)
+	return o.setErrorCondition(clusterRepo, err, orignalStatus)
 }
 
-// changeCondition is only called when error happens
-func (o *OCIRepohandler) changeCondition(clusterRepo *catalog.ClusterRepo, err error) (*catalog.ClusterRepo, error) {
-	repoDownloaded := condition.Cond(catalog.RepoDownloaded)
-	if errors.IsConflict(err) {
-		repoDownloaded.SetError(&clusterRepo.Status, "", nil)
+// setErrorCondition is only called when error happens in the handler and
+// we need to depend on wrangler to reenqueue the handler
+func (o *OCIRepohandler) setErrorCondition(clusterRepo *catalog.ClusterRepo, err error, orignalStatus *catalog.RepoStatus) (*catalog.ClusterRepo, error) {
+	var statusErr error
+
+	ociDownloaded := condition.Cond(catalog.OCIDownloaded)
+	if apierrors.IsConflict(err) {
+		ociDownloaded.SetError(&clusterRepo.Status, "", nil)
 	} else {
-		repoDownloaded.SetError(&clusterRepo.Status, "", err)
+		ociDownloaded.SetError(&clusterRepo.Status, "", err)
 	}
 
-	repoDownloaded.LastUpdated(&clusterRepo.Status, time.Now().UTC().Format(time.RFC3339))
+	if !equality.Semantic.DeepEqual(orignalStatus, clusterRepo.Status) {
+		ociDownloaded.LastUpdated(&clusterRepo.Status, time.Now().UTC().Format(time.RFC3339))
 
-	return o.clusterRepoController.UpdateStatus(clusterRepo)
+		clusterRepo, statusErr = o.clusterRepoController.UpdateStatus(clusterRepo)
+		if statusErr != nil {
+			err = statusErr
+		}
+	}
+
+	return clusterRepo, err
+}
+
+// set4xxCondition is only called when we receive a 4xx error
+// we need to wait for 6 hours to reenqueue.
+func (o *OCIRepohandler) set4xxCondition(clusterRepo *catalog.ClusterRepo, err *errcode.ErrorResponse, orignalStatus *catalog.RepoStatus) (*catalog.ClusterRepo, error) {
+	err.Errors = append(err.Errors, errcode.Error{Message: fmt.Sprintf(" will retry will after %s", interval)})
+
+	ociDownloaded := condition.Cond(catalog.OCIDownloaded)
+	if apierrors.IsConflict(err) {
+		ociDownloaded.SetError(&clusterRepo.Status, "", nil)
+	} else {
+		ociDownloaded.SetError(&clusterRepo.Status, "", err)
+	}
+
+	if !equality.Semantic.DeepEqual(orignalStatus, &clusterRepo.Status) {
+		// Since status has changed, update the lastUpdatedTime
+		ociDownloaded.LastUpdated(&clusterRepo.Status, time.Now().UTC().Format(time.RFC3339))
+
+		return o.clusterRepoController.UpdateStatus(clusterRepo)
+	}
+
+	return clusterRepo, nil
 }

@@ -45,9 +45,10 @@ type Client struct {
 	// tag is the tag part of the URL ie. 1.0.2
 	tag string
 
-	insecure          bool
-	caBundle          []byte
-	insecurePlainHTTP bool
+	insecure                 bool
+	caBundle                 []byte
+	insecurePlainHTTP        bool
+	exponentialBackOffValues catalogv1.ExponentialBackOffValues
 
 	username string
 	password string
@@ -57,10 +58,11 @@ type Client struct {
 // the URL provided and fetching the credentials.
 func NewClient(url string, clusterRepoSpec catalogv1.RepoSpec, credentialSecret *v1.Secret) (*Client, error) {
 	ociClient := &Client{
-		URL:               url,
-		insecure:          clusterRepoSpec.InsecureSkipTLSverify,
-		caBundle:          clusterRepoSpec.CABundle,
-		insecurePlainHTTP: clusterRepoSpec.InsecurePlainHTTP,
+		URL:                      url,
+		insecure:                 clusterRepoSpec.InsecureSkipTLSverify,
+		caBundle:                 clusterRepoSpec.CABundle,
+		insecurePlainHTTP:        clusterRepoSpec.InsecurePlainHTTP,
+		exponentialBackOffValues: clusterRepoSpec.ExponentialBackOffValues,
 	}
 
 	err := ociClient.parseURL()
@@ -213,8 +215,31 @@ func (o *Client) getAuthClient() (*http.Client, error) {
 	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
 	baseTransport.TLSClientConfig = config
 
+	retryPolicy := &retry.GenericPolicy{
+		Retryable: retry.DefaultPredicate,
+		MinWait:   1 * time.Minute,
+		MaxWait:   5 * time.Minute,
+		MaxRetry:  5,
+	}
+
+	if o.exponentialBackOffValues.MaxRetries > 0 {
+		retryPolicy.MaxRetry = o.exponentialBackOffValues.MaxRetries
+	}
+	if o.exponentialBackOffValues.MaxWait != nil {
+		retryPolicy.MaxWait = o.exponentialBackOffValues.MaxWait.Duration
+	}
+	if o.exponentialBackOffValues.MinWait != nil {
+		retryPolicy.MaxWait = o.exponentialBackOffValues.MinWait.Duration
+	}
+	retryPolicy.Backoff = retry.ExponentialBackoff(retryPolicy.MinWait, 2, 0.2)
+
+	retryTransport := retry.NewTransport(baseTransport)
+	retryTransport.Policy = func() retry.Policy {
+		return retryPolicy
+	}
+
 	return &http.Client{
-		Transport: retry.NewTransport(baseTransport),
+		Transport: retryTransport,
 	}, nil
 }
 
