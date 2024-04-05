@@ -149,7 +149,7 @@ func (o *Client) fetchChart(orasRepository *remote.Repository) (string, error) {
 	// Helm codebase sets oci artifacts manifest mediatype as ocispecv1.MediaTypeImageManifest
 	// https://github.com/oras-project/oras-go/blob/v1/pkg/content/manifest.go#L89C22-L89C44 referenced by helm codebase
 	if manifest.MediaType != ocispecv1.MediaTypeImageManifest {
-		return "", fmt.Errorf("the oci artifact %s is not a helm chart. The OCI URl must contain only helm charts", ociURL)
+		return "", fmt.Errorf("the oci artifact %s is not a helm chart. The OCI URL must contain only helm charts", ociURL)
 	}
 
 	// Fetch the manifest blob of the oci artifact
@@ -189,7 +189,7 @@ func (o *Client) fetchChart(orasRepository *remote.Repository) (string, error) {
 		}
 	}
 
-	return tempFile.Name(), fmt.Errorf("the oci artifact %s is not a helm chart. The OCI URl must contain only helm charts", ociURL)
+	return tempFile.Name(), fmt.Errorf("the oci artifact %s is not a helm chart. The OCI URL must contain only helm charts", ociURL)
 }
 
 // getAuthClient creates an oras auth client that can be used
@@ -229,7 +229,7 @@ func (o *Client) getAuthClient() (*http.Client, error) {
 		retryPolicy.MaxWait = o.exponentialBackOffValues.MaxWait.Duration
 	}
 	if o.exponentialBackOffValues.MinWait != nil {
-		retryPolicy.MaxWait = o.exponentialBackOffValues.MinWait.Duration
+		retryPolicy.MinWait = o.exponentialBackOffValues.MinWait.Duration
 	}
 	retryPolicy.Backoff = retry.ExponentialBackoff(retryPolicy.MinWait, 2, 0.2)
 

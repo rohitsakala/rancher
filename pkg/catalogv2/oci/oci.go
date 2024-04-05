@@ -25,7 +25,7 @@ import (
 )
 
 // maxHelmRepoIndexSize defines what is the max size of helm repo index file we support.
-const maxHelmRepoIndexSize int = 30 * 1024 * 1024 // 30 MiB
+var maxHelmRepoIndexSize int = 30 * 1024 * 1024 // 30 MiB
 
 // Chart returns an io.ReadCloser of the chart tar that is requested.
 // It uses oras Go library to download the manifest of the OCI artifact
@@ -248,15 +248,18 @@ func GenerateIndex(URL string, credentialSecret *corev1.Secret,
 }
 
 // addToHelmRepoIndex adds the helmchart aka oras repository to the helm repo index
-func addToHelmRepoIndex(ociClient Client, indexFile *repo.IndexFile, orasRepository *remote.Repository) error {
+func addToHelmRepoIndex(ociClient Client, indexFile *repo.IndexFile, orasRepository *remote.Repository) (err error) {
 	ociURL := fmt.Sprintf("%s/%s:%s", ociClient.registry, ociClient.repository, ociClient.tag)
 	filePath := ""
-	var err error
+	var indexFileBytes []byte
 
 	// Delete the temporary file created to store the helm chart.
 	defer func() {
 		if filePath != "" {
-			err = os.Remove(filePath)
+			err2 := os.Remove(filePath)
+			if err == nil {
+				err = err2
+			}
 		}
 	}()
 	// The chartname is always the last part of the repository
@@ -268,24 +271,26 @@ func addToHelmRepoIndex(ociClient Client, indexFile *repo.IndexFile, orasReposit
 	for _, entry := range indexFile.Entries[chartName] {
 		if entry.Metadata.Name == chartName && entry.Version == ociClient.tag && entry.Digest != "" {
 			logrus.Debugf("skip adding chart %s version %s since it is already present in the index", chartName, ociClient.tag)
-			return nil
+			return
 		}
 	}
 
 	// Fetch the helm chart tar to get the Chart.yaml
 	filePath, err = ociClient.fetchChart(orasRepository)
 	if err != nil {
-		return fmt.Errorf("failed to fetch the helm chart %s: %w", ociURL, err)
+		err = fmt.Errorf("failed to fetch the helm chart %s: %w", ociURL, err)
+		return
 	}
 
 	// We load index into memory and so we should set a limit
 	// to the size of the index file that is being created.
-	indexFileBytes, err := json.Marshal(indexFile)
+	indexFileBytes, err = json.Marshal(indexFile)
 	if err != nil {
-		return err
+		return
 	}
 	if len(indexFileBytes) > maxHelmRepoIndexSize {
-		return fmt.Errorf("there are a lot of charts inside this oci URL %s which is making the index larger than %d", ociURL, maxHelmRepoIndexSize)
+		err = fmt.Errorf("there are a lot of charts inside this oci URL %s which is making the index larger than %d", ociURL, maxHelmRepoIndexSize)
+		return
 	}
 
 	// Remove the entry from the indexfile since the next function addToIndex
@@ -299,8 +304,8 @@ func addToHelmRepoIndex(ociClient Client, indexFile *repo.IndexFile, orasReposit
 	// Add the chart to the index
 	err = ociClient.addToIndex(indexFile, filePath)
 	if err != nil {
-		return fmt.Errorf("unable to add helm chart %s to index: %w", ociURL, err)
+		err = fmt.Errorf("unable to add helm chart %s to index: %w", ociURL, err)
 	}
 
-	return err
+	return
 }

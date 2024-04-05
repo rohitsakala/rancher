@@ -1,9 +1,13 @@
 package helm
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -11,6 +15,7 @@ import (
 	"github.com/rancher/rancher/pkg/catalogv2"
 	"github.com/rancher/rancher/pkg/catalogv2/oci"
 	catalogcontrollers "github.com/rancher/rancher/pkg/generated/controllers/catalog.cattle.io/v1"
+	corev1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
 	"github.com/rancher/wrangler/v2/pkg/apply"
 	"github.com/rancher/wrangler/v2/pkg/condition"
 	corev1controllers "github.com/rancher/wrangler/v2/pkg/generated/controllers/core/v1"
@@ -184,4 +189,60 @@ func (o *OCIRepohandler) set4xxCondition(clusterRepo *catalog.ClusterRepo, err *
 	}
 
 	return clusterRepo, nil
+}
+
+// getIndexfile fetches the indexfile if it already exits for the clusterRepo
+// if not, it creates a new indexfile and returns it.
+func getIndexfile(clusterRepoStatus catalog.RepoStatus,
+	clusterRepoSpec catalog.RepoSpec,
+	configMapClient corev1controllers.ConfigMapClient,
+	owner metav1.OwnerReference,
+	namespace string) (*repo.IndexFile, error) {
+
+	indexFile := repo.NewIndexFile()
+	var configMap *corev1.ConfigMap
+	var err error
+
+	if clusterRepoSpec.URL != clusterRepoStatus.URL {
+		return indexFile, nil
+	}
+
+	// If the status has the configmap defined, fetch it.
+	if clusterRepoStatus.IndexConfigMapName != "" {
+		configMap, err = configMapClient.Get(clusterRepoStatus.IndexConfigMapNamespace, clusterRepoStatus.IndexConfigMapName, metav1.GetOptions{})
+		if err != nil {
+			return indexFile, fmt.Errorf("failed to fetch the index configmap for clusterRepo %s", owner.Name)
+		}
+	} else {
+		// otherwise if the configmap is already created, fetch it using the name of the configmap and the namespace.
+		configMapName := generateConfigMapName(owner.Name, 0, owner.UID)
+		configMapNamespace := getConfigMapNamespace(namespace)
+
+		configMap, err = configMapClient.Get(configMapNamespace, configMapName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return indexFile, nil
+			}
+			return indexFile, fmt.Errorf("failed to fetch the index configmap for clusterRepo %s", owner.Name)
+		}
+	}
+
+	data, err := readBytes(configMapClient, configMap)
+	if err != nil {
+		return indexFile, fmt.Errorf("failed to read bytes of existing configmap for URL %s", clusterRepoSpec.URL)
+	}
+	gz, err := gzip.NewReader(bytes.NewBuffer(data))
+	if err != nil {
+		return indexFile, err
+	}
+	defer gz.Close()
+	data, err = io.ReadAll(gz)
+	if err != nil {
+		return indexFile, err
+	}
+	if err := json.Unmarshal(data, indexFile); err != nil {
+		return indexFile, err
+	}
+
+	return indexFile, nil
 }

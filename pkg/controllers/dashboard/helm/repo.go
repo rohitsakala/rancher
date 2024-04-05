@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"time"
 
 	catalog "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
@@ -339,62 +338,6 @@ func shouldRefresh(spec *catalog.RepoSpec, status *catalog.RepoStatus) bool {
 	}
 	refreshTime := time.Now().Add(-interval)
 	return refreshTime.After(status.DownloadTime.Time)
-}
-
-// getIndexfile fetches the indexfile if it already exits for the clusterRepo
-// if not, it creates a new indexfile and returns it.
-func getIndexfile(clusterRepoStatus catalog.RepoStatus,
-	clusterRepoSpec catalog.RepoSpec,
-	configMapClient corev1controllers.ConfigMapClient,
-	owner metav1.OwnerReference,
-	namespace string) (*repo.IndexFile, error) {
-
-	indexFile := repo.NewIndexFile()
-	var configMap *corev1.ConfigMap
-	var err error
-
-	if clusterRepoSpec.URL != clusterRepoStatus.URL {
-		return indexFile, nil
-	}
-
-	// If the status has the configmap defined, fetch it.
-	if clusterRepoStatus.IndexConfigMapName != "" {
-		configMap, err = configMapClient.Get(clusterRepoStatus.IndexConfigMapNamespace, clusterRepoStatus.IndexConfigMapName, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch the index configmap for clusterRepo %s", owner.Name)
-		}
-	} else {
-		// otherwise if the configmap is already created, fetch it using the name of the configmap and the namespace.
-		configMapName := generateConfigMapName(owner.Name, 0, owner.UID)
-		configMapNamespace := getConfigMapNamespace(namespace)
-
-		configMap, err = configMapClient.Get(configMapNamespace, configMapName, metav1.GetOptions{})
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return indexFile, nil
-			}
-			return nil, fmt.Errorf("failed to fetch the index configmap for clusterRepo %s", owner.Name)
-		}
-	}
-
-	data, err := readBytes(configMapClient, configMap)
-	if err != nil {
-		return indexFile, fmt.Errorf("failed to read bytes of existing configmap for URL %s", clusterRepoSpec.URL)
-	}
-	gz, err := gzip.NewReader(bytes.NewBuffer(data))
-	if err != nil {
-		return indexFile, err
-	}
-	defer gz.Close()
-	data, err = io.ReadAll(gz)
-	if err != nil {
-		return indexFile, err
-	}
-	if err := json.Unmarshal(data, indexFile); err != nil {
-		return indexFile, err
-	}
-
-	return indexFile, nil
 }
 
 // readBytes reads data from the chain of helm repo index configmaps.
