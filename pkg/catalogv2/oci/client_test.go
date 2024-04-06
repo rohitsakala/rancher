@@ -78,6 +78,13 @@ func spinRegistry(layerSize int, chartMediaType, helmManifest bool, testcaseName
 
 		switch r.URL.Path {
 
+		case "/v2/testingchart/tags/list":
+			t := `{"tags": ["0.1.0"]}`
+			w.Write([]byte(t))
+
+		case "/v2/_catalog":
+			t := `{"repositories": ["testingchart"]}`
+			w.Write([]byte(t))
 		case "/v2/testingchart/blobs/" + configDesc.Digest.String():
 			t.FailNow()
 		case "/v2/testingchart/blobs/" + layerDesc.Digest.String():

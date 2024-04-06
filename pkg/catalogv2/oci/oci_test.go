@@ -2,6 +2,7 @@ package oci
 
 import (
 	"fmt"
+	corev1 "k8s.io/api/core/v1"
 	"strings"
 	"testing"
 
@@ -84,6 +85,116 @@ func TestAddtoHelmRepoIndex(t *testing.T) {
 				if len(tt.indexFile.Entries) > 0 {
 					assert.Equal(t, len(tt.indexFile.Entries["testingchart"]), 1)
 				}
+			}
+		})
+	}
+}
+
+func TestGenerateIndex(t *testing.T) {
+
+	indexFile := repo.NewIndexFile()
+	indexFile.Entries["testingchart"] = repo.ChartVersions{
+		&repo.ChartVersion{
+			Metadata: &chart.Metadata{
+				Name:    "testingchart",
+				Version: "0.1.0",
+			},
+			Digest: "digest",
+		},
+	}
+
+	indexFile2 := repo.NewIndexFile()
+	indexFile2.Entries["testingchart"] = repo.ChartVersions{
+		&repo.ChartVersion{
+			Metadata: &chart.Metadata{
+				Name:    "testingchart",
+				Version: "0.1.0",
+			},
+		},
+	}
+	one := 1
+
+	tests := []struct {
+		name            string
+		indexFile       *repo.IndexFile
+		expectedErrMsg  string
+		numberOfEntries *int
+		secret          *corev1.Secret
+		url             string
+		urlPath         string
+	}{
+		{
+			"returns an error url is invalid",
+			repo.NewIndexFile(),
+			"failed to create an OCI client for url",
+			nil,
+			nil,
+			"invalidUrl//",
+			"",
+		},
+		{
+			"returns an error if url is not an oras repository",
+			repo.NewIndexFile(),
+			"failed to create an OCI client for url",
+			nil,
+			nil,
+			"http://github.com/rancher/charts",
+			"",
+		},
+
+		{
+			"Can add a specific chart to indexFile if tag is provided",
+			repo.NewIndexFile(),
+			"",
+			&one,
+			nil,
+			"",
+			"testingchart:0.1.0",
+		},
+
+		{
+			"Can add charts to index file if repository is provided",
+			repo.NewIndexFile(),
+			"",
+			&one,
+			nil,
+			"",
+			"testingchart",
+		},
+		{
+			"Can add charts to index file if registry is provided",
+			repo.NewIndexFile(),
+			"",
+			&one,
+			nil,
+			"",
+			"",
+		},
+		{
+			"Should not duplicate charts on indexFile",
+			indexFile,
+			"",
+			&one,
+			nil,
+			"",
+			"testingchart:0.1.0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := spinRegistry(0, true, true, tt.name, t)
+			defer ts.Close()
+			u := fmt.Sprintf("%s/%s", strings.Replace(ts.URL, "http", "oci", 1), tt.urlPath)
+			if tt.url != "" {
+				u = tt.url
+			}
+			repoSpec := v1.RepoSpec{InsecurePlainHTTP: true, InsecureSkipTLSverify: true}
+			i, err := GenerateIndex(u, nil, repoSpec, v1.RepoStatus{}, tt.indexFile)
+			if tt.expectedErrMsg != "" {
+				assert.Contains(t, err.Error(), tt.expectedErrMsg)
+			}
+			if tt.numberOfEntries != nil {
+				assert.Equal(t, len(i.Entries["testingchart"]), *tt.numberOfEntries)
 			}
 		})
 	}
