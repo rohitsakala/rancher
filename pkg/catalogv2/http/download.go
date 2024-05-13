@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/rancher/wrangler/v2/pkg/schemas/validation"
 
@@ -30,6 +31,9 @@ func Icon(secret *corev1.Secret, repoURL string, caBundle []byte, insecureSkipTL
 		return nil, "", err
 	}
 	defer client.CloseIdleConnections()
+	// Icons don't need 30 second timeout since most icons are fetched in < 1s.
+	// This will also improve performance on airgapped clusters for helm repositories.
+	client.Timeout = 2 * time.Second
 
 	u, err := url.Parse(chart.Icon)
 	if err != nil {
