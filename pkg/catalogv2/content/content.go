@@ -189,12 +189,12 @@ func (c *Manager) Icon(namespace, name, chartName, version string) (io.ReadClose
 	}
 
 	// Check if the repository from the chart is bundled and is at an airgapped environment
-	rancherBundled := isRancherAndBundledCatalog(repo)
+	/*rancherBundled := isRancherAndBundledCatalog(repo)
 	if rancherBundled {
 		// If the icon is not available in the git repository, use the fallback icon for airgapped environments.
 		// which will be handled by the UI, as long as this returns a nil io.ReadCloser and nil error.
 		return nil, "", nil
-	}
+	}*/
 
 	secret, err := catalogv2.GetSecret(c.secrets, repo.spec, repo.metadata.Namespace)
 	if err != nil {
