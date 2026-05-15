@@ -224,6 +224,13 @@ var (
 		false,
 		true,
 	)
+	UserNotifications = newFeature(
+		"user-notifications",
+		"Enable the user notification subsystem for cluster event watching",
+		true,
+		true,
+		false,
+	)
 )
 
 func ListEnabled() []string {
@@ -271,6 +278,12 @@ func InitializeFeatures(featuresClient managementv3.FeatureClient, featureArgs s
 	err := featuresClient.Delete("external-rules", &metav1.DeleteOptions{})
 	if err != nil && !errors.IsNotFound(err) {
 		logrus.Errorf("unable to delete external-rules feature: %v", err)
+	}
+
+	// cert-expiry-notifications was replaced by user-notifications.
+	err = featuresClient.Delete("cert-expiry-notifications", &metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		logrus.Errorf("unable to delete cert-expiry-notifications feature: %v", err)
 	}
 
 	// creates any features in map that do not exist, updates features with new default value

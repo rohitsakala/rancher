@@ -146,6 +146,7 @@ var (
 	ClusterAgentDefaultAffinity         = NewSetting("cluster-agent-default-affinity", ClusterAgentAffinity)
 	FleetAgentDefaultAffinity           = NewSetting("fleet-agent-default-affinity", FleetAgentAffinity)
 	MaxUIPluginFileByteSize             = NewSetting("max-ui-plugin-file-byte-size", strconv.Itoa(DefaultMaxUIPluginFileSizeInBytes)) // Max file size in bytes for ui plugins
+	UserNotificationEventTypes          = NewSetting("user-notification-event-types", "cert-expiry")
 
 	ClusterAgentDefaultPriorityClass       = NewSetting("cluster-agent-default-priority-class", ClusterAgentPriorityClass)
 	ClusterAgentDefaultPodDisruptionBudget = NewSetting("cluster-agent-default-pod-disruption-budget", ClusterAgentPodDisruptionBudget)

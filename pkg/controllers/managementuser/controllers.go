@@ -8,6 +8,7 @@ import (
 	apimgmtv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/controllers/managementlegacy/compose/common"
 	"github.com/rancher/rancher/pkg/controllers/managementuser/cavalidator"
+	"github.com/rancher/rancher/pkg/controllers/notifications"
 	"github.com/rancher/rancher/pkg/controllers/managementuser/clusterauthtoken"
 	"github.com/rancher/rancher/pkg/controllers/managementuser/healthsyncer"
 	"github.com/rancher/rancher/pkg/controllers/managementuser/machinerole"
@@ -34,6 +35,10 @@ func Register(ctx context.Context, mgmt *config.ScaledContext, cluster *config.U
 	}
 	healthsyncer.Register(ctx, cluster)
 	networkpolicy.Register(ctx, cluster)
+
+	if features.UserNotifications.Enabled() {
+		notifications.Register(ctx, cluster)
+	}
 
 	secret.Register(ctx, mgmt, cluster, clusterRec)
 	resourcequota.Register(ctx, cluster)

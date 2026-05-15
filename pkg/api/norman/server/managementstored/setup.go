@@ -27,6 +27,7 @@ import (
 	globalRoleStore "github.com/rancher/rancher/pkg/api/norman/store/globalrole"
 	grbstore "github.com/rancher/rancher/pkg/api/norman/store/globalrolebindings"
 	nodeStore "github.com/rancher/rancher/pkg/api/norman/store/node"
+	notificationStore "github.com/rancher/rancher/pkg/api/norman/store/notification"
 	"github.com/rancher/rancher/pkg/api/norman/store/preference"
 	rtStore "github.com/rancher/rancher/pkg/api/norman/store/roletemplate"
 	"github.com/rancher/rancher/pkg/api/norman/store/scoped"
@@ -367,7 +368,13 @@ func KontainerDriver(schemas *types.Schemas, management *config.ScaledContext) {
 }
 
 func RancherUserNotifications(schemas *types.Schemas, management *config.ScaledContext) {
-	schemas.Schema(&managementschema.Version, client.RancherUserNotificationType)
+	schema := schemas.Schema(&managementschema.Version, client.RancherUserNotificationType)
+	schema.Store = notificationStore.NewStore(
+		schema.Store,
+		management.Management.ClusterRoleTemplateBindings("").Controller().Lister(),
+		management.Management.GlobalRoleBindings("").Controller().Lister(),
+		management.Management.GlobalRoles("").Controller().Lister(),
+	)
 }
 
 func OIDCClients(schemas *types.Schemas, management *config.ScaledContext) {

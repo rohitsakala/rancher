@@ -7,28 +7,40 @@ import (
 const (
 	RancherUserNotificationType                 = "rancherUserNotification"
 	RancherUserNotificationFieldAnnotations     = "annotations"
+	RancherUserNotificationFieldCategory        = "category"
+	RancherUserNotificationFieldClusterName     = "clusterName"
 	RancherUserNotificationFieldComponentName   = "componentName"
 	RancherUserNotificationFieldCreated         = "created"
 	RancherUserNotificationFieldCreatorID       = "creatorId"
+	RancherUserNotificationFieldEventDetails     = "eventDetails"
 	RancherUserNotificationFieldLabels          = "labels"
 	RancherUserNotificationFieldMessage         = "message"
 	RancherUserNotificationFieldName            = "name"
 	RancherUserNotificationFieldOwnerReferences = "ownerReferences"
 	RancherUserNotificationFieldRemoved         = "removed"
+	RancherUserNotificationFieldResolved        = "resolved"
+	RancherUserNotificationFieldAcknowledgedAt  = "acknowledgedAt"
+	RancherUserNotificationFieldSeverity        = "severity"
 	RancherUserNotificationFieldUUID            = "uuid"
 )
 
 type RancherUserNotification struct {
 	types.Resource
 	Annotations     map[string]string `json:"annotations,omitempty" yaml:"annotations,omitempty"`
+	Category        string            `json:"category,omitempty" yaml:"category,omitempty"`
+	ClusterName     string            `json:"clusterName,omitempty" yaml:"clusterName,omitempty"`
 	ComponentName   string            `json:"componentName,omitempty" yaml:"componentName,omitempty"`
 	Created         string            `json:"created,omitempty" yaml:"created,omitempty"`
 	CreatorID       string            `json:"creatorId,omitempty" yaml:"creatorId,omitempty"`
+	EventDetails    map[string]string `json:"eventDetails,omitempty" yaml:"eventDetails,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 	Message         string            `json:"message,omitempty" yaml:"message,omitempty"`
 	Name            string            `json:"name,omitempty" yaml:"name,omitempty"`
 	OwnerReferences []OwnerReference  `json:"ownerReferences,omitempty" yaml:"ownerReferences,omitempty"`
 	Removed         string            `json:"removed,omitempty" yaml:"removed,omitempty"`
+	Resolved        bool              `json:"resolved,omitempty" yaml:"resolved,omitempty"`
+	AcknowledgedAt  string            `json:"acknowledgedAt,omitempty" yaml:"acknowledgedAt,omitempty"`
+	Severity        string            `json:"severity,omitempty" yaml:"severity,omitempty"`
 	UUID            string            `json:"uuid,omitempty" yaml:"uuid,omitempty"`
 }
 

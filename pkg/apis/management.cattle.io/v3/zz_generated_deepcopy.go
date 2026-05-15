@@ -6494,6 +6494,17 @@ func (in *RancherUserNotification) DeepCopyInto(out *RancherUserNotification) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	if in.AcknowledgedAt != nil {
+		in, out := &in.AcknowledgedAt, &out.AcknowledgedAt
+		*out = (*in).DeepCopy()
+	}
+	if in.EventDetails != nil {
+		in, out := &in.EventDetails, &out.EventDetails
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	return
 }
 

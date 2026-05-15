@@ -15,4 +15,11 @@ type RancherUserNotification struct {
 
 	ComponentName string `json:"componentName"`
 	Message       string `json:"message"`
+
+	Severity    string            `json:"severity,omitempty"`
+	Category    string            `json:"category,omitempty"`
+	ClusterName string            `json:"clusterName,omitempty"`
+	Resolved       bool              `json:"resolved,omitempty"`
+	AcknowledgedAt *metav1.Time      `json:"acknowledgedAt,omitempty"`
+	EventDetails   map[string]string `json:"eventDetails,omitempty"`
 }
